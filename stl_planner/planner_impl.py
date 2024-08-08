@@ -168,6 +168,14 @@ class STLPlanner(PlannerInterface):
             A = expression.A
             b = expression.b
             expression.props.zs = [mu(i, PWL, 0.1, A, b) for i in range(len(PWL)-1)]
+        elif isinstance(expression, stl.NegLinearExp):
+            A = expression.A
+            b = expression.b
+            expression.props.zs = [negmu(i, PWL, bloat_factor + size, A, b) for i in range(len(PWL)-1)]
+        elif isinstance(expression, stl.Conjunction):
+            expression.props.zs = [Conjunction([c.props.zs[i] for c in expression.children]) for i in range(len(PWL)-1)]
+        elif isinstance(expression, stl.Disjunction):
+            expression.props.zs = [Disjunction([c.props.zs[i] for c in expression.children]) for i in range(len(PWL)-1)]
         elif isinstance(expression, stl.Eventually):
             expression.props.zs = [eventually(i, \
                                               expression.left_time_bound, \
@@ -180,7 +188,6 @@ class STLPlanner(PlannerInterface):
                                           expression.right_time_bound, \
                                           expression.child.props.zs, \
                                           PWL) for i in range(len(PWL)-1)]
-
         # elif spec.op == 'mu':
         #     spec.zs = [mu(i, PWL, 0.1, spec.info['A'], spec.info['b']) for i in range(len(PWL)-1)]
         # elif spec.op == 'negmu':
@@ -240,10 +247,6 @@ class STLPlanner(PlannerInterface):
         for n_segments in range(self.min_n_segments, self.max_n_segments + 1):
             self._clear_lcf_vars(stl_expression)
 
-            print("----------------------------")
-            print(f"number of segments: {n_segments}")
-
-            PWLs = []
             m = gp.Model("xref")
             # m.setParam(GRB.Param.OutputFlag, 0)
             m.setParam(GRB.Param.IntFeasTol, self.int_feas_tol)
@@ -270,7 +273,6 @@ class STLPlanner(PlannerInterface):
 
                 PWL.append(point_vars)
 
-            PWLs.append(PWL)
             m.update()
 
             # the initial constriant
@@ -281,21 +283,16 @@ class STLPlanner(PlannerInterface):
             goal = goal.cpu().numpy()
             m.addConstrs(PWL[-1][0][i] == goal[i] for i in range(dims))
 
-            self._add_space_constraints(m, [P[0] for P in PWL])
+            # self._add_space_constraints(m, [P[0] for P in PWL])
             self._add_velocity_constraints(m, PWL)
             self._add_time_constraints(m, PWL)
 
             self._construct_lcf_from_stl_expression(stl_expression, PWL, bloat, size)
             self._add_cd_tree_constraints(m, stl_expression.props.zs[0])
 
-            # add_mutual_clearance_constraints(m, PWLs, bloat)
-
-            # obj = sum([L1Norm(m, _sub(PWL[i][0], PWL[i+1][0])) for PWL in PWLs for i in range(len(PWL)-1)])
-            obj = sum([PWL[-1][1] for PWL in PWLs])
+            # Minimize final time
+            obj = PWL[-1][1]
             m.setObjective(obj, GRB.MINIMIZE)
-
-            m.write("test.lp")
-            print('NumBinVars: %d'%m.getAttr('NumBinVars'))
 
             try:
                 start = time.time()
@@ -303,16 +300,13 @@ class STLPlanner(PlannerInterface):
                 end = time.time()
                 print('sovling it takes %.3f s'%(end - start))
 
-                PWLs_output = []
-                for PWL in PWLs:
-                    PWL_output = []
-                    for P in PWL:
-                        PWL_output.append([[P[0][i].X for i in range(len(P[0]))], P[1].X])
-                    PWLs_output.append(PWL_output)
+                PWL_output = []
+                for P in PWL:
+                    PWL_output.append([[P[0][i].X for i in range(len(P[0]))], P[1].X])
+
                 m.dispose()
 
-                first_PWL_output = PWLs_output[0]
-                solution = np.stack([p for p, _ in first_PWL_output])
+                solution = np.stack([p for p, _ in PWL_output])
                 return solution, {}
 
             except Exception as e:
