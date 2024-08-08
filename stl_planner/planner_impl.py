@@ -244,6 +244,10 @@ class STLPlanner(PlannerInterface):
             # n_trajectories=1,
             **kwargs
     ):
+
+        start = start.cpu().numpy()
+        goal = goal.cpu().numpy()
+
         for n_segments in range(self.min_n_segments, self.max_n_segments + 1):
             self._clear_lcf_vars(stl_expression)
 
@@ -254,11 +258,10 @@ class STLPlanner(PlannerInterface):
             # m.setParam(GRB.Param.NonConvex, 2)
             # m.getEnv().set(GRB_IntParam_OutputFlag, 0)
 
-            limits = None
             bloat = 0.05
             size = 0.11/2
 
-            x0 = start.cpu().numpy()
+            x0 = start
             x0 = np.array(x0).reshape(-1).tolist()
 
             dims = len(x0)
@@ -280,7 +283,6 @@ class STLPlanner(PlannerInterface):
             m.addConstr(PWL[0][1] == 0)
 
             # the goal constraint
-            goal = goal.cpu().numpy()
             m.addConstrs(PWL[-1][0][i] == goal[i] for i in range(dims))
 
             # self._add_space_constraints(m, [P[0] for P in PWL])
@@ -295,10 +297,10 @@ class STLPlanner(PlannerInterface):
             m.setObjective(obj, GRB.MINIMIZE)
 
             try:
-                start = time.time()
+                start_time = time.time()
                 m.optimize()
-                end = time.time()
-                print('sovling it takes %.3f s'%(end - start))
+                end_time = time.time()
+                print('solving it takes %.3f s'%(end_time - start_time))
 
                 PWL_output = []
                 for P in PWL:
