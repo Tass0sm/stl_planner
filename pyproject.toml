@@ -1,0 +1,13 @@
+[tool.poetry]
+name = "stl-planner"
+version = "0.1.0"
+description = ""
+authors = ["Dawei Sun", "Jingkai Chen", "Sayan Mitra", "Chuchu Fan", "Tassos Manganaris"]
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
