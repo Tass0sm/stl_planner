@@ -1,3 +1,23 @@
+def _sub(x1, x2):
+    return [x1[i] - x2[i] for i in range(len(x1))]
+
+
+def _add(x1, x2):
+    return [x1[i] + x2[i] for i in range(len(x1))]
+
+
+def L1Norm(model, x):
+    xvar = model.addVars(len(x), lb=-GRB.INFINITY)
+    abs_x = model.addVars(len(x))
+    model.update()
+    xvar = [xvar[i] for i in range(len(xvar))]
+    abs_x = [abs_x[i] for i in range(len(abs_x))]
+    for i in range(len(x)):
+        model.addConstr(xvar[i] == x[i])
+        model.addConstr(abs_x[i] == gp.abs_(xvar[i]))
+    return sum(abs_x)
+
+
 import time
 import torch
 import einops
@@ -19,60 +39,7 @@ import gurobipy as gp
 from gurobipy import GRB
 
 
-# def difference_vars(model, x1, x2):
-#     assert len(x1) == len(x2)
-
-#     l = len(x1)
-#     x_diffs = model.addVars(l)
-#     for i in range(l):
-#         model.addConstr(x_diffs[i] == x2[i] - x1[i])
-
-#     return x_diffs
-
-# def l1_norm(model, x):
-#     x_norm = model.addVar()
-#     model.addConstr(x_norm == grb.norm(x, 1.0))
-#     return x_norm
-
-
-def _sub(x1, x2):
-    return [x1[i] - x2[i] for i in range(len(x1))]
-
-
-def _add(x1, x2):
-    return [x1[i] + x2[i] for i in range(len(x1))]
-
-
-def L1Norm(model, x):
-    xvar = model.addVars(len(x), lb=-GRB.INFINITY)
-    abs_x = model.addVars(len(x))
-    model.update()
-    xvar = [xvar[i] for i in range(len(xvar))]
-    abs_x = [abs_x[i] for i in range(len(abs_x))]
-    for i in range(len(x)):
-        model.addConstr(xvar[i] == x[i])
-        model.addConstr(abs_x[i] == gp.abs_(xvar[i]))
-    return sum(abs_x)
-
-
-def add_mutual_clearance_constraints(model, PWLs, bloat):
-    for i in range(len(PWLs)):
-        for j in range(i+1, len(PWLs)):
-            PWL1 = PWLs[i]
-            PWL2 = PWLs[j]
-            for k in range(len(PWL1)-1):
-                for l in range(len(PWL2)-1):
-                    x11, t11 = PWL1[k]
-                    x12, t12 = PWL1[k+1]
-                    x21, t21 = PWL2[l]
-                    x22, t22 = PWL2[l+1]
-                    z_noIntersection = noIntersection(t11, t12, t21, t22)
-                    z_disjoint_segments = disjoint_segments(model, [x11, x12], [x21, x22], bloat)
-                    z = Disjunction([z_noIntersection, z_disjoint_segments])
-                    add_CDTree_Constraints(model, z)
-
-
-class STLPlanner(PlannerInterface):
+class AbstractSTLPlanner(PlannerInterface):
     def __init__(
             self,
             planner_name : str,
@@ -103,10 +70,6 @@ class STLPlanner(PlannerInterface):
 
         self.t_max = 10.0
         self.v_max = 1.0
-
-    @property
-    def name(self):
-        return "stl_planner"
 
     def _add_space_constraints(self, model, points, bloat=0.):
         q_min = self.problem.get_q_min()
@@ -244,77 +207,7 @@ class STLPlanner(PlannerInterface):
             # n_trajectories=1,
             **kwargs
     ):
-
-        start = start.cpu().numpy()
-        goal = goal.cpu().numpy()
-
-        for n_segments in range(self.min_n_segments, self.max_n_segments + 1):
-            self._clear_lcf_vars(stl_expression)
-
-            m = gp.Model("xref")
-            # m.setParam(GRB.Param.OutputFlag, 0)
-            m.setParam(GRB.Param.IntFeasTol, self.int_feas_tol)
-            m.setParam(GRB.Param.MIPGap, self.mip_gap)
-            # m.setParam(GRB.Param.NonConvex, 2)
-            # m.getEnv().set(GRB_IntParam_OutputFlag, 0)
-
-            bloat = 0.05
-            size = 0.11/2
-
-            x0 = start
-            x0 = np.array(x0).reshape(-1).tolist()
-
-            dims = len(x0)
-
-            PWL = []
-            for i in range(n_segments + 1):
-                # point coordinates and time
-                point_vars = [
-                    m.addVars(dims, lb=-GRB.INFINITY),
-                    m.addVar()
-                ]
-
-                PWL.append(point_vars)
-
-            m.update()
-
-            # the initial constriant
-            m.addConstrs(PWL[0][0][i] == x0[i] for i in range(dims))
-            m.addConstr(PWL[0][1] == 0)
-
-            # the goal constraint
-            m.addConstrs(PWL[-1][0][i] == goal[i] for i in range(dims))
-
-            # self._add_space_constraints(m, [P[0] for P in PWL])
-            self._add_velocity_constraints(m, PWL)
-            self._add_time_constraints(m, PWL)
-
-            self._construct_lcf_from_stl_expression(stl_expression, PWL, bloat, size)
-            self._add_cd_tree_constraints(m, stl_expression.props.zs[0])
-
-            # Minimize final time
-            obj = PWL[-1][1]
-            m.setObjective(obj, GRB.MINIMIZE)
-
-            try:
-                start_time = time.time()
-                m.optimize()
-                end_time = time.time()
-                print('solving it takes %.3f s'%(end_time - start_time))
-
-                PWL_output = []
-                for P in PWL:
-                    PWL_output.append([[P[0][i].X for i in range(len(P[0]))], P[1].X])
-
-                m.dispose()
-
-                solution = np.stack([p for p, _ in PWL_output])
-                return solution, {}
-
-            except Exception as e:
-                m.dispose()
-
-        return None, {}
+        raise NotImplementedError()
 
     def reset(self):
         pass
