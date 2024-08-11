@@ -1,23 +1,3 @@
-def _sub(x1, x2):
-    return [x1[i] - x2[i] for i in range(len(x1))]
-
-
-def _add(x1, x2):
-    return [x1[i] + x2[i] for i in range(len(x1))]
-
-
-def L1Norm(model, x):
-    xvar = model.addVars(len(x), lb=-GRB.INFINITY)
-    abs_x = model.addVars(len(x))
-    model.update()
-    xvar = [xvar[i] for i in range(len(xvar))]
-    abs_x = [abs_x[i] for i in range(len(abs_x))]
-    for i in range(len(x)):
-        model.addConstr(xvar[i] == x[i])
-        model.addConstr(abs_x[i] == gp.abs_(xvar[i]))
-    return sum(abs_x)
-
-
 import time
 import torch
 import einops
@@ -37,6 +17,26 @@ from .stl import *
 
 import gurobipy as gp
 from gurobipy import GRB
+
+
+def _sub(x1, x2):
+    return [x1[i] - x2[i] for i in range(len(x1))]
+
+
+def _add(x1, x2):
+    return [x1[i] + x2[i] for i in range(len(x1))]
+
+
+def L1Norm(model, x):
+    xvar = model.addVars(len(x), lb=-GRB.INFINITY)
+    abs_x = model.addVars(len(x))
+    model.update()
+    xvar = [xvar[i] for i in range(len(xvar))]
+    abs_x = [abs_x[i] for i in range(len(abs_x))]
+    for i in range(len(x)):
+        model.addConstr(xvar[i] == x[i])
+        model.addConstr(abs_x[i] == gp.abs_(xvar[i]))
+    return sum(abs_x)
 
 
 class AbstractSTLPlanner(PlannerInterface):
@@ -71,14 +71,17 @@ class AbstractSTLPlanner(PlannerInterface):
         self.t_max = 10.0
         self.v_max = 1.0
 
-    def _add_space_constraints(self, model, points, bloat=0.):
+        self.bloat = 0.005
+        self.size = 0.005
+
+    def _add_space_constraints(self, model, points):
         q_min = self.problem.get_q_min()
         q_max = self.problem.get_q_max()
 
         for p in points:
             for i, v in p.items():
-                model.addConstr(v >= (q_min[i] + bloat))
-                model.addConstr(v <= (q_max[i] - bloat))
+                model.addConstr(v >= (q_min[i] + self.bloat))
+                model.addConstr(v <= (q_max[i] - self.bloat))
 
     def _add_time_constraints(self, model, PWL):
         if self.t_max is not None:
@@ -106,7 +109,7 @@ class AbstractSTLPlanner(PlannerInterface):
 
         expression.props.zs = []
 
-    def _construct_lcf_from_stl_expression(self, expression, PWL, bloat_factor, size):
+    def _construct_lcf_from_stl_expression(self, expression, PWL):
         """This function takes an STL expression and inductively constructs a
         linear constraint formula (LCF), which is a sentence of atomic formulas
         connected by disjunction and conjuction operators. Each atomic formula
@@ -117,7 +120,7 @@ class AbstractSTLPlanner(PlannerInterface):
 
         # post order traversal
         for node in expression.children:
-            self._construct_lcf_from_stl_expression(node, PWL, bloat_factor, size)
+            self._construct_lcf_from_stl_expression(node, PWL)
 
         print(expression)
 
@@ -130,11 +133,11 @@ class AbstractSTLPlanner(PlannerInterface):
         if isinstance(expression, stl.LinearExp):
             A = expression.A
             b = expression.b
-            expression.props.zs = [mu(i, PWL, 0.1, A, b) for i in range(len(PWL)-1)]
+            expression.props.zs = [mu(i, PWL, self.bloat + self.size, A, b) for i in range(len(PWL)-1)]
         elif isinstance(expression, stl.NegLinearExp):
             A = expression.A
             b = expression.b
-            expression.props.zs = [negmu(i, PWL, bloat_factor + size, A, b) for i in range(len(PWL)-1)]
+            expression.props.zs = [negmu(i, PWL, self.bloat + self.size, A, b) for i in range(len(PWL)-1)]
         elif isinstance(expression, stl.Conjunction):
             expression.props.zs = [Conjunction([c.props.zs[i] for c in expression.children]) for i in range(len(PWL)-1)]
         elif isinstance(expression, stl.Disjunction):
@@ -181,7 +184,7 @@ class AbstractSTLPlanner(PlannerInterface):
                 return root.constraints
             dep_constraints = []
             for dep in root.deps:
-                dep_constraints.append(gen_CDTree_constraints(model, dep))
+                dep_constraints.append(self._gen_cd_tree_constraints(model, dep))
             zs = []
             for dep_con in dep_constraints:
                 if isinstance(root, Disjunction):

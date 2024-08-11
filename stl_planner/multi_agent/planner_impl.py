@@ -84,14 +84,12 @@ class MASTLPlanner(AbstractSTLPlanner):
                 self._clear_lcf_vars(stl_expression)
 
             m = gp.Model("xref")
+
             # m.setParam(GRB.Param.OutputFlag, 0)
             m.setParam(GRB.Param.IntFeasTol, self.int_feas_tol)
             m.setParam(GRB.Param.MIPGap, self.mip_gap)
             # m.setParam(GRB.Param.NonConvex, 2)
             # m.getEnv().set(GRB_IntParam_OutputFlag, 0)
-
-            bloat = 0.05
-            size = 0.11/2
 
             PWLs = []
 
@@ -127,13 +125,13 @@ class MASTLPlanner(AbstractSTLPlanner):
                 self._add_time_constraints(m, PWL)
 
                 if stl_expression is not None:
-                    self._construct_lcf_from_stl_expression(stl_expression, PWL, bloat, size)
+                    self._construct_lcf_from_stl_expression(stl_expression, PWL)
                     self._add_cd_tree_constraints(m, stl_expression.props.zs[0])
 
             # TODO:
-            # add_mutual_clearance_constraints(m, PWLs, bloat)
+            # add_mutual_clearance_constraints(m, PWLs)
 
-            # Minimize final time
+            # Minimize sum of final times
             obj = sum([PWL[-1][1] for PWL in PWLs])
             m.setObjective(obj, GRB.MINIMIZE)
 
