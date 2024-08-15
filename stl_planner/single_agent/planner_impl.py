@@ -20,6 +20,10 @@ import gurobipy as gp
 from gurobipy import GRB
 
 
+class InfeasibleModelError(Exception):
+    pass
+
+
 class STLPlanner(AbstractSTLPlanner):
     def __init__(
             self,
@@ -33,24 +37,21 @@ class STLPlanner(AbstractSTLPlanner):
     def name(self):
         return "stl_planner"
 
-    def solve(
+    def _get_single_solution(
             self,
             start,
             goal,
             stl_expression=None,
-            # n_trajectories=1,
+            seed=0,
+            grb_env=None,
             **kwargs
     ):
-
-        # start = torch.tensor([-1.0, -1.0])
-        start = start.cpu().numpy()
-        # goal = torch.tensor([1.0, 1.0])
-        goal = goal.cpu().numpy()
+        model_infeasible = False
 
         for n_segments in range(self.min_n_segments, self.max_n_segments + 1):
             self._clear_lcf_vars(stl_expression)
 
-            m = gp.Model("xref")
+            m = gp.Model("xref", env=grb_env)
             # m.setParam(GRB.Param.OutputFlag, 0)
             m.setParam(GRB.Param.IntFeasTol, self.int_feas_tol)
             m.setParam(GRB.Param.MIPGap, self.mip_gap)
@@ -96,7 +97,10 @@ class STLPlanner(AbstractSTLPlanner):
                 start_time = time.time()
                 m.optimize()
                 end_time = time.time()
-                print('solving it takes %.3f s'%(end_time - start_time))
+                # print('solving it takes %.3f s'%(end_time - start_time))
+
+                if m.status == GRB.Status.INFEASIBLE:
+                    raise InfeasibleModelError()
 
                 PWL_output = []
                 for P in PWL:
@@ -104,13 +108,19 @@ class STLPlanner(AbstractSTLPlanner):
 
                 m.dispose()
 
-                solution = np.stack([p for p, _ in PWL_output])
-                return solution, {}
-
+                return PWL_output
+            except AttributeError as e:
+                m.dispose()
+            except InfeasibleModelError as e:
+                model_infeasible = True
+                m.dispose()
             except Exception as e:
                 m.dispose()
 
-        return None, {}
+        if model_infeasible:
+            print(f"Model is infeasible for the expression \"{stl_expression}\"")
+
+        return None
 
     def reset(self):
         pass

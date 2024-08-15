@@ -95,6 +95,9 @@ def release(i, a, b, zphi1s, zphi2s, PWL):
     return Conjunction(conjunctions)
 
 def mu(i, PWL, bloat_factor, A, b):
+    A = A.cpu().numpy()
+    b = b.cpu().numpy()
+
     bloat_factor = np.max([0, bloat_factor])
     # this segment is fully contained in Ax<=b (shrinked)
     b = b.reshape(-1)
@@ -108,6 +111,9 @@ def mu(i, PWL, bloat_factor, A, b):
     return Conjunction(conjunctions)
 
 def negmu(i, PWL, bloat_factor, A, b):
+    A = A.cpu().numpy()
+    b = b.cpu().numpy()
+
     # this segment is outside Ax<=b (bloated)
     b = b.reshape(-1)
     num_edges = len(b)

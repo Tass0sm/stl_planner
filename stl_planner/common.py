@@ -3,6 +3,7 @@ import torch
 import einops
 import mlflow
 from math import ceil
+from abc import abstractmethod
 
 import numpy as np
 
@@ -14,6 +15,8 @@ from torch_robotics.torch_utils.torch_utils import DEFAULT_TENSOR_ARGS, freeze_t
 
 from wip_trajectory_generator.stl_method import stl
 from .stl import *
+
+import scipy.interpolate
 
 import gurobipy as gp
 from gurobipy import GRB
@@ -51,6 +54,8 @@ class AbstractSTLPlanner(PlannerInterface):
 
             **kwargs
     ):
+        assert problem.has_linear_constraint_obstacles()
+
         self.problem = problem
 
         if n_segments is None:
@@ -68,8 +73,8 @@ class AbstractSTLPlanner(PlannerInterface):
         self.int_feas_tol  = 1e-1 * self.t_min_sep / m
         self.mip_gap = 1e-4
 
-        self.t_max = 10.0
-        self.v_max = 1.0
+        self.t_max : int = 64
+        self.v_max = 0.2
 
         self.bloat = 0.005
         self.size = 0.005
@@ -104,10 +109,25 @@ class AbstractSTLPlanner(PlannerInterface):
     def _clear_lcf_vars(self, expression):
         """Remove variables created for LCF of expression."""
 
-        for child in expression.children:
+        for child in expression.subformulas:
             self._clear_lcf_vars(child)
 
         expression.props.zs = []
+
+    def _get_time_bounds(self, expression):
+        # TODO: Settle the semantics of unbounded time intervals in the
+        # expression class
+        if expression.unbound:
+            left_time_bound = 0
+        else:
+            left_time_bound = expression.left_time_bound
+
+        if expression.right_unbound or expression.unbound:
+            right_time_bound = self.t_max
+        else:
+            right_time_bound = expression.right_time_bound
+
+        return left_time_bound, right_time_bound
 
     def _construct_lcf_from_stl_expression(self, expression, PWL):
         """This function takes an STL expression and inductively constructs a
@@ -119,10 +139,8 @@ class AbstractSTLPlanner(PlannerInterface):
         """
 
         # post order traversal
-        for node in expression.children:
+        for node in expression.subformulas:
             self._construct_lcf_from_stl_expression(node, PWL)
-
-        print(expression)
 
         # ??
         if len(expression.props.zs) == len(PWL)-1:
@@ -138,22 +156,26 @@ class AbstractSTLPlanner(PlannerInterface):
             A = expression.A
             b = expression.b
             expression.props.zs = [negmu(i, PWL, self.bloat + self.size, A, b) for i in range(len(PWL)-1)]
-        elif isinstance(expression, stl.Conjunction):
-            expression.props.zs = [Conjunction([c.props.zs[i] for c in expression.children]) for i in range(len(PWL)-1)]
-        elif isinstance(expression, stl.Disjunction):
-            expression.props.zs = [Disjunction([c.props.zs[i] for c in expression.children]) for i in range(len(PWL)-1)]
+        elif isinstance(expression, stl.Conjunction) or isinstance(expression, stl.And):
+            expression.props.zs = [Conjunction([c.props.zs[i] for c in expression.subformulas]) for i in range(len(PWL)-1)]
+        elif isinstance(expression, stl.Disjunction) or isinstance(expression, stl.Or):
+            expression.props.zs = [Disjunction([c.props.zs[i] for c in expression.subformulas]) for i in range(len(PWL)-1)]
         elif isinstance(expression, stl.Eventually):
-            expression.props.zs = [eventually(i, \
-                                              expression.left_time_bound, \
-                                              expression.right_time_bound, \
-                                              expression.child.props.zs, \
+            left_b, right_b = self._get_time_bounds(expression)
+            expression.props.zs = [eventually(i, left_b, right_b, \
+                                              expression.subformula.props.zs, \
                                               PWL) for i in range(len(PWL)-1)]
         elif isinstance(expression, stl.Always):
-            expression.props.zs = [always(i, \
-                                          expression.left_time_bound, \
-                                          expression.right_time_bound, \
-                                          expression.child.props.zs, \
+            left_b, right_b = self._get_time_bounds(expression)
+            expression.props.zs = [always(i, left_b, right_b, \
+                                          expression.subformula.props.zs, \
                                           PWL) for i in range(len(PWL)-1)]
+        elif isinstance(expression, stl.Until):
+            left_b, right_b = self._get_time_bounds(expression)
+            expression.props.zs = [until(i, left_b, right_b, \
+                                         expression.left_subformula.props.zs, \
+                                         expression.right_subformula.props.zs, \
+                                         PWL) for i in range(len(PWL)-1)]
         # elif spec.op == 'mu':
         #     spec.zs = [mu(i, PWL, 0.1, spec.info['A'], spec.info['b']) for i in range(len(PWL)-1)]
         # elif spec.op == 'negmu':
@@ -202,12 +224,75 @@ class AbstractSTLPlanner(PlannerInterface):
         for con in constrs:
             model.addConstr(con >= 0)
 
+
+    def _create_integer_time_solution(self, PWL):
+        reference_times = np.array([seg[1] for seg in PWL])
+        reference_points = np.array([seg[0] for seg in PWL])
+        start, end = reference_points[0], reference_points[-1]
+
+        interpolator = scipy.interpolate.interp1d(reference_times, \
+                                                  reference_points, \
+                                                  axis=0, bounds_error=False, \
+                                                  fill_value=(start, end))
+        target_times = np.arange(self.t_max)
+        solution = interpolator(target_times)
+
+        return solution
+
+
     def solve(
             self,
             start,
             goal,
             stl_expression=None,
-            # n_trajectories=1,
+            n_trajectories=1,
+            **kwargs
+    ):
+        q_mins, q_maxs = self.problem.get_linear_constraint_obstacles()
+        not_in_box_exps = [stl.NotInBox(stl.Var("q", dim=2), q_min, q_max) for q_min, q_max in zip(q_mins, q_maxs)]
+        not_in_boxes = stl.Conjunction(not_in_box_exps)
+        collision_free = stl.Always(not_in_boxes, right_time_bound=self.t_max)
+
+        if stl_expression is None:
+            stl_expression = collision_free
+        else:
+            stl_expression = stl.Conjunction([collision_free, stl_expression])
+
+        start = start.cpu().numpy()
+        goal = goal.cpu().numpy()
+
+        sol_l = []
+
+        with gp.Env(empty=True) as env:
+            env.setParam("OutputFlag", 0)
+            env.start()
+
+            for i in range(n_trajectories):
+                PWL = self._get_single_solution(
+                    start,
+                    goal,
+                    stl_expression=stl_expression,
+                    grb_env=env,
+                    **kwargs
+                )
+
+                if PWL is not None:
+                    sol = self._create_integer_time_solution(PWL)
+                else:
+                    sol = None
+
+                sol_l.append(sol)
+
+        failed = any([sol is None for sol in sol_l])
+
+        return sol_l, { "failed": failed }
+
+    @abstractmethod
+    def _get_single_solution(
+            self,
+            start,
+            goal,
+            stl_expression=None,
             **kwargs
     ):
         raise NotImplementedError()
