@@ -11,7 +11,7 @@ from corallab_planners.backends.planner_interface import PlannerInterface
 
 from torch_robotics.torch_utils.torch_utils import DEFAULT_TENSOR_ARGS, freeze_torch_model_params
 
-from wip_trajectory_generator.stl_method import stl
+from wip_trajectory_generator import stl
 from ..common import *
 from ..stl import *
 
@@ -62,12 +62,13 @@ class MASTLPlanner(AbstractSTLPlanner):
     def name(self):
         return "ma_stl_planner"
 
-    def solve(
+    def _get_single_solution(
             self,
             start,
             goal,
             ma_stl_expression=None,
-            # n_trajectories=1,
+            seed=0,
+            grb_env=None,
             **kwargs
     ):
 
@@ -120,7 +121,7 @@ class MASTLPlanner(AbstractSTLPlanner):
                 # the goal constraint
                 m.addConstrs(PWL[-1][0][i] == goal_i[i] for i in range(dims))
 
-                # self._add_space_constraints(m, [P[0] for P in PWL])
+                self._add_space_constraints(m, [P[0] for P in PWL])
                 self._add_velocity_constraints(m, PWL)
                 self._add_time_constraints(m, PWL)
 
@@ -139,7 +140,7 @@ class MASTLPlanner(AbstractSTLPlanner):
                 start_time = time.time()
                 m.optimize()
                 end_time = time.time()
-                print('solving it takes %.3f s'%(end_time - start_time))
+                # print('solving it takes %.3f s'%(end_time - start_time))
 
                 PWLs_output = []
                 for PWL in PWLs:

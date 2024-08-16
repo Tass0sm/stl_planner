@@ -12,7 +12,7 @@ from corallab_planners.backends.planner_interface import PlannerInterface
 
 from torch_robotics.torch_utils.torch_utils import DEFAULT_TENSOR_ARGS, freeze_torch_model_params
 
-from wip_trajectory_generator.stl_method import stl
+from wip_trajectory_generator import stl
 from ..common import *
 from ..stl import *
 
@@ -42,6 +42,7 @@ class STLPlanner(AbstractSTLPlanner):
             start,
             goal,
             stl_expression=None,
+            n_trajectories=1,
             seed=0,
             grb_env=None,
             **kwargs
@@ -57,6 +58,10 @@ class STLPlanner(AbstractSTLPlanner):
             m.setParam(GRB.Param.MIPGap, self.mip_gap)
             # m.setParam(GRB.Param.NonConvex, 2)
             # m.getEnv().set(GRB_IntParam_OutputFlag, 0)
+
+            # m.setParam(GRB.Param.PoolSolutions, n_trajectories)
+            # m.setParam(GRB.Param.PoolSearchMode, 1)
+            # m.setParam(GRB.Param.SolutionNumber, n_trajectories)
 
             x0 = start
             x0 = np.array(x0).reshape(-1).tolist()

@@ -13,7 +13,7 @@ from corallab_planners.backends.planner_interface import PlannerInterface
 
 from torch_robotics.torch_utils.torch_utils import DEFAULT_TENSOR_ARGS, freeze_torch_model_params
 
-from wip_trajectory_generator.stl_method import stl
+from wip_trajectory_generator import stl
 from .stl import *
 
 import scipy.interpolate
