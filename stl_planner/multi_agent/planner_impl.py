@@ -14,26 +14,10 @@ from torch_robotics.torch_utils.torch_utils import DEFAULT_TENSOR_ARGS, freeze_t
 from wip_trajectory_generator import stl
 from ..common import *
 from ..stl import *
+from ..exceptions import *
 
 import gurobipy as gp
 from gurobipy import GRB
-
-
-def add_mutual_clearance_constraints(model, PWLs, bloat):
-    for i in range(len(PWLs)):
-        for j in range(i+1, len(PWLs)):
-            PWL1 = PWLs[i]
-            PWL2 = PWLs[j]
-            for k in range(len(PWL1)-1):
-                for l in range(len(PWL2)-1):
-                    x11, t11 = PWL1[k]
-                    x12, t12 = PWL1[k+1]
-                    x21, t21 = PWL2[l]
-                    x22, t22 = PWL2[l+1]
-                    z_noIntersection = noIntersection(t11, t12, t21, t22)
-                    z_disjoint_segments = disjoint_segments(model, [x11, x12], [x21, x22], bloat)
-                    z = Disjunction([z_noIntersection, z_disjoint_segments])
-                    add_CDTree_Constraints(model, z)
 
 
 class MASTLPlanner(AbstractSTLPlanner):
@@ -62,6 +46,23 @@ class MASTLPlanner(AbstractSTLPlanner):
     def name(self):
         return "ma_stl_planner"
 
+    def _add_mutual_clearance_constraints(self, model, PWLs):
+        for i in range(len(PWLs)):
+            for j in range(i+1, len(PWLs)):
+                PWL1 = PWLs[i]
+                PWL2 = PWLs[j]
+
+                for k in range(len(PWL1)-1):
+                    for l in range(len(PWL2)-1):
+                        x11, t11 = PWL1[k]
+                        x12, t12 = PWL1[k+1]
+                        x21, t21 = PWL2[l]
+                        x22, t22 = PWL2[l+1]
+                        z_noIntersection = noIntersection(t11, t12, t21, t22)
+                        z_disjoint_segments = disjoint_segments(model, [x11, x12], [x21, x22], self.bloat)
+                        z = Disjunction([z_noIntersection, z_disjoint_segments])
+                        self._add_cd_tree_constraints(model, z)
+
     def _get_single_solution(
             self,
             start,
@@ -71,14 +72,23 @@ class MASTLPlanner(AbstractSTLPlanner):
             grb_env=None,
             **kwargs
     ):
+        if ma_stl_expression is None:
+            ma_stl_expression = {}
 
-        start = torch.tensor([-1.0, -1.0, -0.8, -0.8])
-        goal = torch.tensor([1.0, 1.0, -0.8, -0.5])
+        for i, r in enumerate(self.subrobots):
+            var_i = stl.Var(f"q_{i}", dim=r.q_dim)
+            collision_free_i = self._create_collision_avoidance_expression(var_i)
+            input_exp = ma_stl_expression.get(i, None)
+
+            if input_exp is None:
+                ma_stl_expression[i] = collision_free_i
+            else:
+                ma_stl_expression[i] = stl.Conjunction([
+                    collision_free_i, input_exp
+                ])
 
         subrobot_starts = self._get_subrobot_states(start)
-        subrobot_starts = [s.cpu().numpy() for s in subrobot_starts]
         subrobot_goals = self._get_subrobot_states(goal)
-        subrobot_goals = [s.cpu().numpy() for s in subrobot_goals]
 
         for n_segments in range(self.min_n_segments, self.max_n_segments + 1):
             for _, stl_expression in ma_stl_expression.items():
@@ -129,8 +139,8 @@ class MASTLPlanner(AbstractSTLPlanner):
                     self._construct_lcf_from_stl_expression(stl_expression, PWL)
                     self._add_cd_tree_constraints(m, stl_expression.props.zs[0])
 
-            # TODO:
-            # add_mutual_clearance_constraints(m, PWLs)
+            # Clearance between
+            self._add_mutual_clearance_constraints(m, PWLs)
 
             # Minimize sum of final times
             obj = sum([PWL[-1][1] for PWL in PWLs])
@@ -142,6 +152,9 @@ class MASTLPlanner(AbstractSTLPlanner):
                 end_time = time.time()
                 # print('solving it takes %.3f s'%(end_time - start_time))
 
+                if m.status == GRB.Status.INFEASIBLE:
+                    raise InfeasibleModelError()
+
                 PWLs_output = []
                 for PWL in PWLs:
                     PWL_output = []
@@ -149,26 +162,27 @@ class MASTLPlanner(AbstractSTLPlanner):
                         PWL_output.append([[P[0][i].X for i in range(len(P[0]))], P[1].X])
                     PWLs_output.append(PWL_output)
 
-                # PWL_output = []
-                # for P in PWL:
-                #     PWL_output.append([[P[0][i].X for i in range(len(P[0]))], P[1].X])
-
-                solution = {}
-                for i, PWL_output in enumerate(PWLs_output):
-                    sol_i = np.stack([p for p, _ in PWL_output])
-                    solution[i] = sol_i
-
                 m.dispose()
 
-                solution = np.concatenate([s for k, s in solution.items()], axis=-1)
+                sols = []
+                for PWL in PWLs_output:
+                    sol_i = self._create_integer_time_solution(PWL)
+                    sols.append(sol_i)
 
-                # solution = PWLs_output # np.stack([p for p, _ in PWL_output])
-                return solution, {}
-
+                solution = np.concatenate(sols, axis=-1)
+                return solution
+            except AttributeError as e:
+                m.dispose()
+            except InfeasibleModelError as e:
+                model_infeasible = True
+                m.dispose()
             except Exception as e:
                 m.dispose()
 
-        return None, {}
+        if model_infeasible:
+            print(f"Model is infeasible for the multi-agent expression \"{ma_stl_expression}\"")
+
+        return None
 
     def reset(self):
         pass

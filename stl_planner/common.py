@@ -14,32 +14,13 @@ from corallab_planners.backends.planner_interface import PlannerInterface
 from torch_robotics.torch_utils.torch_utils import DEFAULT_TENSOR_ARGS, freeze_torch_model_params
 
 from wip_trajectory_generator import stl
+from .stl import _sub
 from .stl import *
 
 import scipy.interpolate
 
 import gurobipy as gp
 from gurobipy import GRB
-
-
-def _sub(x1, x2):
-    return [x1[i] - x2[i] for i in range(len(x1))]
-
-
-def _add(x1, x2):
-    return [x1[i] + x2[i] for i in range(len(x1))]
-
-
-def L1Norm(model, x):
-    xvar = model.addVars(len(x), lb=-GRB.INFINITY)
-    abs_x = model.addVars(len(x))
-    model.update()
-    xvar = [xvar[i] for i in range(len(xvar))]
-    abs_x = [abs_x[i] for i in range(len(abs_x))]
-    for i in range(len(x)):
-        model.addConstr(xvar[i] == x[i])
-        model.addConstr(abs_x[i] == gp.abs_(xvar[i]))
-    return sum(abs_x)
 
 
 class AbstractSTLPlanner(PlannerInterface):
@@ -76,8 +57,8 @@ class AbstractSTLPlanner(PlannerInterface):
         self.t_max : int = 64
         self.v_max = 0.2
 
-        self.bloat = 0.005
-        self.size = 0.005
+        self.bloat = 0.04
+        self.size = 0.04
 
     def _add_space_constraints(self, model, points):
         q_min = self.problem.get_q_min()
@@ -103,7 +84,7 @@ class AbstractSTLPlanner(PlannerInterface):
             x2, t2 = PWL[i+1]
             # squared_dist = sum([(x1[j]-x2[j])*(x1[j]-x2[j]) for j in range(len(x1))])
             # model.addConstr(squared_dist <= (vmax**2) * (t2 - t1) * (t2 - t1))
-            L1_dist = L1Norm(model, _sub(x1,x2))
+            L1_dist = L1Norm(model, _sub(x1, x2))
             model.addConstr(L1_dist <= self.v_max * (t2 - t1))
 
     def _clear_lcf_vars(self, expression):
@@ -239,6 +220,15 @@ class AbstractSTLPlanner(PlannerInterface):
 
         return solution
 
+    def _create_collision_avoidance_expression(
+            self,
+            var
+    ):
+        q_mins, q_maxs = self.problem.get_linear_constraint_obstacles()
+        not_in_box_exps = [stl.NotInBox(var, q_min, q_max) for q_min, q_max in zip(q_mins, q_maxs)]
+        not_in_boxes = stl.Conjunction(not_in_box_exps)
+        collision_free = stl.Always(not_in_boxes, right_time_bound=self.t_max)
+        return collision_free
 
     def solve(
             self,
@@ -248,16 +238,6 @@ class AbstractSTLPlanner(PlannerInterface):
             n_trajectories=1,
             **kwargs
     ):
-        q_mins, q_maxs = self.problem.get_linear_constraint_obstacles()
-        not_in_box_exps = [stl.NotInBox(stl.Var("q", dim=2), q_min, q_max) for q_min, q_max in zip(q_mins, q_maxs)]
-        not_in_boxes = stl.Conjunction(not_in_box_exps)
-        collision_free = stl.Always(not_in_boxes, right_time_bound=self.t_max)
-
-        if stl_expression is None:
-            stl_expression = collision_free
-        else:
-            stl_expression = stl.Conjunction([collision_free, stl_expression])
-
         start = start.cpu().numpy()
         goal = goal.cpu().numpy()
 
@@ -268,18 +248,13 @@ class AbstractSTLPlanner(PlannerInterface):
             env.start()
 
             for i in range(n_trajectories):
-                PWL = self._get_single_solution(
+                sol = self._get_single_solution(
                     start,
                     goal,
                     stl_expression=stl_expression,
                     grb_env=env,
                     **kwargs
                 )
-
-                if PWL is not None:
-                    sol = self._create_integer_time_solution(PWL)
-                else:
-                    sol = None
 
                 sol_l.append(sol)
 

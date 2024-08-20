@@ -15,13 +15,10 @@ from torch_robotics.torch_utils.torch_utils import DEFAULT_TENSOR_ARGS, freeze_t
 from wip_trajectory_generator import stl
 from ..common import *
 from ..stl import *
+from ..exceptions import *
 
 import gurobipy as gp
 from gurobipy import GRB
-
-
-class InfeasibleModelError(Exception):
-    pass
 
 
 class STLPlanner(AbstractSTLPlanner):
@@ -47,6 +44,14 @@ class STLPlanner(AbstractSTLPlanner):
             grb_env=None,
             **kwargs
     ):
+        var = stl.Var("q", dim=self.problem.get_q_dim())
+        collision_free = self._create_collision_avoidance_expression(var)
+
+        if stl_expression is None:
+            stl_expression = collision_free
+        else:
+            stl_expression = stl.Conjunction([collision_free, stl_expression])
+
         model_infeasible = False
 
         for n_segments in range(self.min_n_segments, self.max_n_segments + 1):
@@ -113,7 +118,8 @@ class STLPlanner(AbstractSTLPlanner):
 
                 m.dispose()
 
-                return PWL_output
+                solution = self._create_integer_time_solution(PWL_output)
+                return solution
             except AttributeError as e:
                 m.dispose()
             except InfeasibleModelError as e:

@@ -7,6 +7,26 @@ M = 1e3
 EPS = 1e-2
 
 
+def _sub(x1, x2):
+    return [x1[i] - x2[i] for i in range(len(x1))]
+
+
+def _add(x1, x2):
+    return [x1[i] + x2[i] for i in range(len(x1))]
+
+
+def L1Norm(model, x):
+    xvar = model.addVars(len(x), lb=-GRB.INFINITY)
+    abs_x = model.addVars(len(x))
+    model.update()
+    xvar = [xvar[i] for i in range(len(xvar))]
+    abs_x = [abs_x[i] for i in range(len(abs_x))]
+    for i in range(len(x)):
+        model.addConstr(xvar[i] == x[i])
+        model.addConstr(abs_x[i] == gp.abs_(xvar[i]))
+    return sum(abs_x)
+
+
 class Conjunction(object):
     # conjunction node
     def __init__(self, deps = []):
